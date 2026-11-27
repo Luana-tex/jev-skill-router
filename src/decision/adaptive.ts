@@ -17,6 +17,7 @@ type Options = {
   minRelevance: number;
   maxSkills: number;
   maxContextTokens: number;
+  onEvaluated?: (name: string, score: number) => void;
   onDecision?: (decision: SelectionDecision) => void;
 };
 
@@ -56,6 +57,7 @@ export async function adaptiveSelection(
       row.length !== needs.length || row.some((score) => !Number.isFinite(score) || score < 0 || score > 1))) {
       throw new Error('Julgamento de cobertura inválido.');
     }
+    chunk.forEach(({ name }, index) => options.onEvaluated?.(name, Math.max(...scores[index]!)));
     probabilities.push(...scores);
     calls++;
   }

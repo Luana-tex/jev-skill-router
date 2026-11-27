@@ -1,5 +1,5 @@
 const args = process.argv.slice(2);
-const command = args[0] === 'doctor' || args[0] === 'cache-clear' ? args.shift() : 'codex-recommend';
+const command = args[0] === 'doctor' || args[0] === 'cache-clear' || args[0] === 'analytics' ? args.shift() : 'codex-recommend';
 process.argv = [process.execPath, import.meta.filename, command, ...args];
 try {
   await import('../../../dist/cli.js');

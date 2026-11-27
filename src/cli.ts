@@ -4,6 +4,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
+import { readJsonInput } from './json-input.js';
+import { registerAnalyticsCommands } from './analytics/cli.js';
+import { operationRecorder } from './analytics/record.js';
 import { codexEarlyFallback, codexNetworkAction, nativeFallback, recommendForCodex } from './codex.js';
 import { resolveCodexCredentials } from './codex-config.js';
 import { codexDoctor } from './doctor.js';
@@ -95,6 +98,7 @@ addDiscoveryOptions(program.command('select'))
   .option('--model <name>', 'Modelo Jev (padrão jev-latest).')
   .option('--baseline', 'Usa o motor da Etapa 2 sem cache ou otimizações.')
   .option('--no-prefilter', 'Encaminha tarefas mecânicas ao motor de julgamento.')
+  .option('--no-analytics', 'Desativa o registro de analytics nesta operação.')
   .option('--no-cache', 'Desativa a leitura e gravação do cache.')
   .option('--cache-dir <path>', 'Diretório base do cache.')
   .option('--cache-ttl-seconds <number>', 'Validade do cache em segundos.')
@@ -111,6 +115,7 @@ addDiscoveryOptions(program.command('select'))
     timeoutMs?: string;
     model?: string;
     baseline?: boolean;
+    analytics?: boolean;
     prefilter?: boolean;
     cache?: boolean;
     cacheDir?: string;
@@ -135,6 +140,7 @@ addDiscoveryOptions(program.command('select'))
       throw new Error(`Opções de seleção inválidas (${config.error.issues.map(({ path }) => path[0]).join(', ')}).`);
     }
 
+    const analytics = operationRecorder('cli', { disabled: options.analytics === false });
     const meter = routingMetrics(config.data.inputUsdPerMillion, config.data.outputUsdPerMillion);
     const criteria = await readCriteria(options.criteria);
     const technologies = await projectTechnologies(process.cwd(), options.technology);
@@ -144,6 +150,7 @@ addDiscoveryOptions(program.command('select'))
       timeoutMs: config.data.timeoutMs,
       onMetrics: (metrics) => {
         meter.record(metrics);
+        analytics.recordBatch(metrics);
         console.error(JSON.stringify(metrics));
       },
     });
@@ -154,6 +161,8 @@ addDiscoveryOptions(program.command('select'))
     try {
       result = await routeSkills(await catalog(options), task, provider, {
         ...config.data,
+        onEvaluated: analytics.onEvaluated,
+        onDecision: analytics.onDecision,
         baseline: options.baseline,
         prefilter: options.prefilter,
         cache,
@@ -165,13 +174,18 @@ addDiscoveryOptions(program.command('select'))
       });
     } catch (error) {
       console.error(JSON.stringify({ event: 'routing-summary', reason: 'failed', ...meter.summary() }));
+      const persistence = await analytics.fail(error, config.data);
+      if (persistence.status === 'failed') console.error(JSON.stringify({ event: 'analytics-persistence', ...persistence }));
       throw error;
     }
+    const summary = meter.summary();
+    const persistence = await analytics.finish(result, config.data);
+    if (persistence.status === 'failed') console.error(JSON.stringify({ event: 'analytics-persistence', ...persistence }));
     const { selected, reason, outcome, cache: cacheStatus, callsAvoided } = result;
     console.error(JSON.stringify({
       event: 'routing-summary', reason, outcome, cache: cacheStatus,
       cacheHits: Number(cacheStatus === 'hit'), cacheMisses: Number(cacheStatus === 'miss'),
-      callsAvoided, ...meter.summary(),
+      callsAvoided, ...summary,
     }));
 
     if (options.json) {
@@ -186,19 +200,10 @@ addDiscoveryOptions(program.command('select'))
     }
   });
 
-async function readCodexInput(): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of process.stdin) {
-    bytes += chunk.length;
-    if (bytes > 256 * 1024) throw new Error('Entrada do Codex excede o limite.');
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-}
-
 program.command('codex-recommend')
   .description('Emite recomendações para a sessão do Codex a partir de JSON em stdin.')
+  .option('--no-analytics', 'Desativa o registro de analytics nesta operação.')
+  .option('--operation-id <uuid>', 'Correlaciona a operação com a tentativa anterior.')
   .option('--no-cache', 'Desativa a leitura e gravação do cache.')
   .option('--cache-dir <path>', 'Diretório base do cache.')
   .option('--cache-ttl-seconds <number>', 'Validade do cache em segundos.')
@@ -215,6 +220,8 @@ program.command('codex-recommend')
   .option('--network-approval-denied', 'Emite fallback sem tentar rede após recusa de autorização.')
   .action(async (options: {
     cache?: boolean;
+    analytics?: boolean;
+    operationId?: string;
     cacheDir?: string;
     cacheTtlSeconds?: string;
     metrics?: boolean;
@@ -229,14 +236,20 @@ program.command('codex-recommend')
     afterNetworkApproval?: boolean;
     networkApprovalDenied?: boolean;
   }) => {
+    const analytics = operationRecorder('codex', {
+      disabled: options.analytics === false,
+      operationId: options.afterNetworkApproval || options.networkApprovalDenied ? options.operationId : undefined,
+      secondAttempt: options.afterNetworkApproval || options.networkApprovalDenied,
+    });
     let meter: ReturnType<typeof routingMetrics> | undefined;
+    let summary: ReturnType<ReturnType<typeof routingMetrics>['summary']> | undefined;
     const publish = (report: object) => console.log(JSON.stringify({
-      ...report, usageTracking: 'not-observed',
-      ...(options.metrics ? { metrics: (meter ?? routingMetrics(0, 0)).summary() } : {}),
+      ...report, operationId: analytics.id, usageTracking: 'not-observed',
+      ...(options.metrics ? { metrics: (summary ?? (meter ?? routingMetrics(0, 0)).summary()) } : {}),
     }));
     const earlyFallback = codexEarlyFallback(process.env.JEV_SKILL_ROUTER_DISABLED === '1', !!options.networkApprovalDenied);
     if (earlyFallback) {
-      publish(earlyFallback);
+      publish({ ...earlyFallback, analytics: await analytics.finish(earlyFallback) });
       return;
     }
     const config = settings.extend({
@@ -251,10 +264,11 @@ program.command('codex-recommend')
       outputUsdPerMillion: optionNumber(options.outputUsdPerMillion),
     });
     if (!config.success) {
-      publish(nativeFallback('invalid-input'));
+      const fallback = nativeFallback('invalid-input');
+      publish({ ...fallback, analytics: await analytics.finish(fallback) });
       return;
     }
-    const input = await readCodexInput().catch(() => undefined);
+    const input = await readJsonInput().catch(() => undefined);
     const runMeter = meter = routingMetrics(config.data.inputUsdPerMillion, config.data.outputUsdPerMillion);
     let receivedHttpResponse = false;
     let credentials: ReturnType<typeof resolveCodexCredentials> | undefined;
@@ -265,6 +279,7 @@ program.command('codex-recommend')
       onMetrics: (batch) => {
         receivedHttpResponse ||= batch.status !== undefined;
         runMeter.record(batch);
+        analytics.recordBatch(batch);
       },
     });
     const result = await recommendForCodex(input, provider, {
@@ -273,16 +288,20 @@ program.command('codex-recommend')
         options.cacheDir ?? defaultCacheDirectory, config.data.cacheTtlSeconds * 1000,
       ),
       explain: options.explain,
+      onEvaluated: analytics.onEvaluated,
+      onDecision: analytics.onDecision,
       baseline: options.baseline,
       maxSkills: config.data.maxSkills,
       minRelevance: config.data.minRelevance,
       minRedundancy: config.data.minRedundancy,
       maxContextTokens: config.data.maxContextTokens,
     });
+    summary = runMeter.summary();
+    const persistence = await analytics.finish(result, config.data);
     const code = 'diagnostic' in result ? result.diagnostic?.code : undefined;
     const nextAction = codexNetworkAction(code, !!options.afterNetworkApproval, receivedHttpResponse);
     publish({
-      ...result,
+      ...result, analytics: persistence,
       ...(nextAction ? { nextAction } : {}),
     });
   });
@@ -300,6 +319,8 @@ program.command('cache-clear')
     const removed = await createSelectionCache(options.cacheDir ?? defaultCacheDirectory, 0).clear();
     console.log(`Entradas de cache removidas: ${removed}.`);
   });
+
+registerAnalyticsCommands(program);
 
 try {
   await program.parseAsync();

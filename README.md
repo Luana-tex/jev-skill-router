@@ -210,3 +210,52 @@ Na fixture, as quatro recomendações adaptativas cobrem as quatro necessidades 
 | [SDK](https://developers.openai.com/codex/sdk) e [App Server](https://developers.openai.com/codex/app-server) | Opções para um cliente que orquestra sessões. O App Server foi usado em validação para consultar o catálogo nativo. |
 | [AGENTS.md](https://developers.openai.com/codex/guides/agents-md) e [Hooks](https://developers.openai.com/codex/hooks) | Instruções de escopo de projeto e eventos de ciclo de vida, respectivamente. Ficaram fora do fluxo de instalação para preservar os projetos e manter o acionamento explícito. |
 | [MCP](https://developers.openai.com/codex/mcp) e plugins | Opções para expor ferramentas e distribuir integrações. Esta versão usa uma skill e um executável local. |
+
+## Analytics local
+
+O histórico fica desativado por padrão. A ativação vale para novas operações de `select` e do launcher do Codex. Use `--no-analytics` para uma execução isolada ou `JEV_ANALYTICS=off` para ignorar a preferência durante testes e simulações.
+
+```sh
+node dist/cli.js analytics enable
+node dist/cli.js analytics status
+node dist/cli.js analytics summary
+node dist/cli.js analytics history --limit 20
+node dist/cli.js analytics period --since 2026-11-01 --until 2026-12-01
+node dist/cli.js analytics projects
+node dist/cli.js analytics skills --limit 10
+node dist/cli.js analytics export --format json > analytics.json
+node dist/cli.js analytics export --format csv > analytics.csv
+node dist/cli.js analytics disable
+node dist/cli.js analytics clear --yes
+```
+
+Os comandos de consulta aceitam `--since`, `--until` e `--project` com o identificador anonimizado. Os limites de datas são início inclusivo e fim exclusivo. Datas sem horário representam meia-noite UTC. O launcher também encaminha o subcomando `analytics`. Desativar a coleta preserva o histórico. A limpeza exige confirmação explícita e preserva a configuração de ativação e a identidade da instalação.
+
+O banco SQLite fica em `${XDG_DATA_HOME:-$HOME/.local/share}/jev-skill-router/analytics.sqlite`. `JEV_ANALYTICS_DIR` aceita outro diretório absoluto. A implementação usa `node:sqlite`, disponível sem flag a partir do Node 22.13. O roteamento com analytics desativado continua compatível com o mínimo atual, Node 22.12. Migrations transacionais são registradas em `user_version`. Falhas de persistência geram um aviso local e o roteamento continua. [Documentação do SQLite no Node.js](https://nodejs.org/api/sqlite.html).
+
+O registro inclui operação, tentativas, tempos, seleções, pontuações, motivos, cobertura estimada, modelo, política e métricas. Projetos Git são correlacionados pela raiz do checkout, e outros projetos pelo diretório inicial. Apenas o HMAC do caminho canônico é persistido. O arquivo de chave local fica separado do banco e das exportações. Solicitações, textos das necessidades, descrições, caminhos e credenciais ficam fora do histórico. Os nomes das skills e seus julgamentos fazem parte dos dados exportáveis.
+
+O launcher retorna um `operationId` para correlacionar a nova tentativa aprovada. As agregações contam uma operação por ID, contabilizam os custos de cada tentativa gravada e usam o último resultado para o ranking de recomendações. Sem uma métrica observável, a saída registra `null` no JSON e a célula fica vazia no CSV. Totais principais consideram as tentativas gravadas. Quando uma delas tem uma métrica desconhecida, o total dessa métrica fica indisponível. `knownTotals` mostra o subtotal de valores observados. `incompleteOperations` e `missingAttempts` indicam lacunas na sequência sem ocultar as métricas disponíveis. Em acertos de cache são registradas as recomendações devolvidas, sem reconstruir julgamentos anteriores. `used` permanece `null` até haver evidência própria de uso efetivo.
+
+A persistência, o domínio e as consultas ficam em módulos separados. A futura interface pode consumir o serviço local de histórico e agregação sem depender da CLI.
+
+
+### Diagnóstico e recuperação de gravações
+
+O resultado JSON do launcher inclui `analytics.status`. Se o armazenamento falhar, `analytics.diagnostic.code` distingue negação de escrita, banco ocupado ou inválido e problemas de configuração ou armazenamento. O resultado do roteamento continua utilizável. Resumo, histórico e exportação abrem o SQLite em modo somente leitura.
+
+Quando o launcher indicar `request-analytics-write-approval-once`, solicite autorização específica para gravar o registro local. Após a aprovação, envie **somente** o objeto `analytics.recovery` em stdin, a partir do mesmo projeto e com o mesmo diretório de analytics:
+
+```sh
+node "$HOME/.agents/skills/jev-skill-router/scripts/recommend.mjs" analytics recover < registro-recuperado.json
+node "$HOME/.agents/skills/jev-skill-router/scripts/recommend.mjs" analytics summary
+node "$HOME/.agents/skills/jev-skill-router/scripts/recommend.mjs" analytics history --limit 5
+```
+
+`analytics recover` grava o resultado já calculado, sem consultar a API. A chave de deduplicação combina o ID da operação e o número da tentativa. Reenviar o mesmo registro retorna `already-recorded`. Se o armazenamento continuar indisponível, mantenha o resultado da recomendação e continue sem registrar. O objeto de recuperação só existe na saída da execução que o produziu.
+
+#### Incidente observado
+
+A execução com cache miss fez quatro chamadas, consumiu 9.106 tokens de entrada e 2.064 de saída, levou 798 ms e teve custo estimado de US$ 0,000382452. A execução com cache hit levou 6 ms, evitou quatro chamadas, consumiu zero tokens e falhou ao gravar no sandbox. A inspeção em modo somente leitura encontrou as métricas da execução bem-sucedida na tentativa 2. O agregador anterior ocultava todos esses valores quando a tentativa 1 não havia sido registrada. O resumo atualizado exibe os valores observados e marca a operação como incompleta.
+
+Para reproduzir sem custos, execute `npm test -- test/analytics-launcher.test.ts`. O teste usa um banco temporário e verifica cache miss com transporte simulado, bloqueio de escrita no hit, recuperação repetida, rota local e fallback.

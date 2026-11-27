@@ -32,6 +32,8 @@ interface CodexOptions {
   cache?: ReturnType<typeof createSelectionCache>;
   disabled?: boolean;
   explain?: boolean;
+  onEvaluated?: (name: string, score: number) => void;
+  onDecision?: (decision: SelectionDecision) => void;
   baseline?: boolean;
   maxSkills?: number;
   minRelevance?: number;
@@ -107,7 +109,10 @@ export async function recommendForCodex(input: unknown, provider: JudgmentProvid
   try {
     const result = await routeSkills(
       candidates.filter(({ name }) => counts.get(name) === 1).map((skill) => ({ ...skill, scope: 'local' })),
-      task, provider, { ...options, needs: needs ? [...new Set(needs)] : undefined, onDecision: options.explain ? (decision) => decisions.push(decision) : undefined },
+      task, provider, { ...options, needs: needs ? [...new Set(needs)] : undefined, onDecision: (decision) => {
+        if (options.explain) decisions.push(decision);
+        options.onDecision?.(decision);
+      } },
     );
     return {
       status: 'advisory',

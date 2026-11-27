@@ -16,7 +16,8 @@ interface RoutingOptions extends SelectionOptions {
 }
 
 // Increment when routing, selection or judgment semantics change.
-const cachePolicy = 'routing-3.1';
+export const legacyPolicyVersion = 'routing-3.1';
+export const adaptivePolicyVersion = 'adaptive-4.3';
 
 export async function routeSkills(
   catalog: readonly Skill[],
@@ -51,10 +52,10 @@ export async function routeSkills(
   if (!baseline && options.cache) {
     try {
       entry = await options.cache.entry([
-        cachePolicy, task, catalog.map(({ name, description, path, scope }) => [name, description, path, scope]),
+        legacyPolicyVersion, task, catalog.map(({ name, description, path, scope }) => [name, description, path, scope]),
         options.model, limits, options.relevanceCriteria, options.redundancyCriteria,
         options.technologies, [...exclusions].sort(), [...allowed].sort(), options.prefilter !== false,
-        ...(adaptive ? ['adaptive-4.3', options.needs, options.maxContextTokens, catalog.map(({ contextTokens }) => contextTokens)] : []),
+        ...(adaptive ? [adaptivePolicyVersion, options.needs, options.maxContextTokens, catalog.map(({ contextTokens }) => contextTokens)] : []),
       ]);
       const saved = await entry.read();
       if (saved && saved.selected.length <= limits.maxSkills

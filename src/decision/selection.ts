@@ -19,6 +19,7 @@ export interface SelectionOptions extends z.input<typeof selectionLimits> {
   needs?: readonly string[];
   maxContextTokens?: number;
   onCoverage?: (result: CoverageResult) => void;
+  onEvaluated?: (name: string, score: number) => void;
   onDecision?: (decision: SelectionDecision) => void;
   onCallCounts?: (baselineCalls: number, actualCalls: number) => void;
 }
@@ -76,6 +77,7 @@ export async function selectSkills(
       ...limits,
       maxContextTokens: options.maxContextTokens ?? defaultContextBudget,
       onDecision: options.onDecision,
+      onEvaluated: options.onEvaluated,
     });
     options.onCallCounts?.(result.calls, result.calls);
     options.onCoverage?.(result.coverage);
@@ -103,6 +105,7 @@ export async function selectSkills(
         if (!validProbability(probability)) {
           throw new Error('Probabilidade de julgamento ausente ou inválida.');
         }
+        if (!batch.against) options.onEvaluated?.(name, probability);
         probabilities.set(name, probability);
       }
     }

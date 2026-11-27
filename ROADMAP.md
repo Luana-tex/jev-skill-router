@@ -9,3 +9,5 @@
 7. **Depuração da integração Codex** — Credencial resolvida independentemente do projeto, diagnóstico offline e fallback com códigos seguros. Validação externa concluída com transporte simulado.
 8. **Robustez da integração** — Aprovação de rede pontual com fallback, opções públicas do launcher para cache e métricas, rastreio local das decisões e registro da execução real autorizada.
 9. **Seleção adaptativa** — Identificadores qualificados do Codex, erros de inventário por entrada e seleção por cobertura com orçamento configurável. Comparação simulada e medições reais anteriores registradas no README.
+10. **Analytics e persistência** — SQLite nativo opt-in, migrations, correlação de tentativas, exportação e CLI de consultas locais. O serviço de leitura fica disponível para a futura interface.
+11. **Robustez do analytics** — Métricas preservadas com tentativas ausentes, consultas somente leitura, diagnósticos de persistência e recuperação idempotente sem novo julgamento.
