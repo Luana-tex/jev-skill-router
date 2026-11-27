@@ -1,3 +1,4 @@
+import type { CoverageResult } from './adaptive.js';
 import type { Skill } from '../discovery.js';
 import type { createSelectionCache } from './cache.js';
 import { localTaskReason } from './prefilter.js';
@@ -36,8 +37,9 @@ export async function routeSkills(
   }
 
   const baseline = options.baseline === true;
+  const adaptive = !baseline && !!options.needs?.length && !!provider.judgeCoverage;
   const customCriteria = options.relevanceCriteria || options.redundancyCriteria;
-  if (!baseline && options.prefilter !== false && !customCriteria && !allowed.size) {
+  if (!baseline && options.prefilter !== false && !customCriteria && !adaptive && !allowed.size) {
     const reason = localTaskReason(task, new Set(catalog.map(({ name }) => name)));
     if (reason) {
       return { selected: [], reason, outcome: 'local-no-judgment', cache: 'bypassed', callsAvoided: minimumSkipped } as const;
@@ -52,6 +54,7 @@ export async function routeSkills(
         cachePolicy, task, catalog.map(({ name, description, path, scope }) => [name, description, path, scope]),
         options.model, limits, options.relevanceCriteria, options.redundancyCriteria,
         options.technologies, [...exclusions].sort(), [...allowed].sort(), options.prefilter !== false,
+        ...(adaptive ? ['adaptive-4.3', options.needs, options.maxContextTokens, catalog.map(({ contextTokens }) => contextTokens)] : []),
       ]);
       const saved = await entry.read();
       if (saved && saved.selected.length <= limits.maxSkills
@@ -60,7 +63,7 @@ export async function routeSkills(
         const selected = saved.selected.map(({ index, relevance }) => ({ ...skills[index]!, relevance }));
         return {
           selected, reason: 'cached-selection', outcome: selected.length ? 'skills-selected' : 'no-relevant-skills',
-          cache: 'hit', callsAvoided: saved.baselineCalls,
+          cache: 'hit', callsAvoided: saved.baselineCalls, ...(saved.coverage ? { coverage: saved.coverage } : {}),
         } as const;
       }
       cacheStatus = 'miss';
@@ -69,10 +72,12 @@ export async function routeSkills(
     }
   }
 
+  let coverage: CoverageResult | undefined;
   let baselineCalls = 0;
   let actualCalls = 0;
   const selected: SelectedSkill[] = await selectSkills(skills, task, provider, {
-    ...options, ...limits, optimizeRedundancy: !baseline,
+    ...options, ...limits, optimizeRedundancy: !baseline, needs: adaptive ? options.needs : undefined,
+    onCoverage: (result) => { coverage = result; },
     onCallCounts: (baselineCount, actualCount) => {
       baselineCalls = baselineCount;
       actualCalls = actualCount;
@@ -82,6 +87,7 @@ export async function routeSkills(
     try {
       await entry.write({
         baselineCalls,
+        coverage,
         selected: selected.map(({ name, relevance }) => ({
           index: skills.findIndex((skill) => skill.name === name), relevance,
         })),
@@ -92,9 +98,10 @@ export async function routeSkills(
   }
   return {
     selected,
-    reason: baseline ? 'baseline' : options.prefilter === false ? 'prefilter-disabled' : 'needs-judgment',
+    reason: baseline ? 'baseline' : adaptive ? 'adaptive-coverage' : options.prefilter === false ? 'prefilter-disabled' : 'needs-judgment',
     outcome: selected.length ? 'skills-selected' : 'no-relevant-skills',
     cache: cacheStatus,
+    ...(coverage ? { coverage } : {}),
     callsAvoided: Math.max(0, baselineCalls - actualCalls),
   } as const;
 }

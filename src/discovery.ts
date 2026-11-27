@@ -4,7 +4,7 @@ import { parseSkillMetadata } from './metadata.js';
 import type { SkillMetadata } from './metadata.js';
 
 export type SkillScope = 'local' | 'global';
-export type Skill = SkillMetadata & { path: string; scope: SkillScope };
+export type Skill = SkillMetadata & { path: string; scope: SkillScope; contextTokens?: number };
 
 export interface SkillRoot {
   path: string;

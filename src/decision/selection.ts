@@ -1,3 +1,5 @@
+import { adaptiveSelection, defaultContextBudget } from './adaptive.js';
+import type { CoverageResult } from './adaptive.js';
 import { z } from 'zod';
 import type { Skill } from '../discovery.js';
 import { redundancyCriteria, relevanceCriteria } from './judgment.js';
@@ -14,8 +16,19 @@ export interface SelectionOptions extends z.input<typeof selectionLimits> {
   redundancyCriteria?: JudgmentCriteria;
   technologies?: readonly string[];
   optimizeRedundancy?: boolean;
+  needs?: readonly string[];
+  maxContextTokens?: number;
+  onCoverage?: (result: CoverageResult) => void;
+  onDecision?: (decision: SelectionDecision) => void;
   onCallCounts?: (baselineCalls: number, actualCalls: number) => void;
 }
+
+export type SelectionDecision = {
+  name: string;
+  decision: 'selected' | 'below-relevance' | 'redundant' | 'selection-limit' | 'covered-by-set' | 'adaptive-limit';
+  relevance: number;
+  coveredBy?: string;
+};
 
 export const selectionBatchSize = 16;
 export type SelectedSkill = Skill & { relevance: number };
@@ -51,6 +64,24 @@ export async function selectSkills(
     skill,
     data: { name: skill.name, description: toJudgmentText(skill.description) },
   }));
+  const judgeCoverage = provider.judgeCoverage?.bind(provider);
+  if (options.needs?.length && judgeCoverage) {
+    const needs = z.array(z.string().trim().min(1)).min(1).max(8).parse(options.needs);
+    const result = await adaptiveSelection(skills, {
+      task: cleanTask,
+      needs: needs.map((need) => toJudgmentText(need)),
+      candidates: candidates.map(({ data }) => data),
+      technologies: options.technologies?.map((technology) => toJudgmentText(technology)),
+    }, judgeCoverage, {
+      ...limits,
+      maxContextTokens: options.maxContextTokens ?? defaultContextBudget,
+      onDecision: options.onDecision,
+    });
+    options.onCallCounts?.(result.calls, result.calls);
+    options.onCoverage?.(result.coverage);
+    return result.selected;
+  }
+
   let baselineCalls = 0;
   let actualCalls = 0;
   function context(criteria: JudgmentCriteria) {
@@ -85,7 +116,11 @@ export async function selectSkills(
   baselineCalls += Math.ceil(candidates.length / selectionBatchSize);
   let remaining = candidates
     .map((candidate) => ({ ...candidate, relevance: relevance.get(candidate.data.name)! }))
-    .filter((candidate) => candidate.relevance >= limits.minRelevance)
+    .filter(({ data, relevance }) => {
+      if (relevance >= limits.minRelevance) return true;
+      options.onDecision?.({ name: data.name, decision: 'below-relevance', relevance });
+      return false;
+    })
     .sort((a, b) => b.relevance - a.relevance || a.data.name.localeCompare(b.data.name, 'en'));
 
   const overlapCriteria = options.redundancyCriteria ?? redundancyCriteria;
@@ -94,18 +129,32 @@ export async function selectSkills(
     const [best, ...others] = remaining;
     if (!best) break;
     selected.push({ ...best.skill, relevance: best.relevance });
-    if (selected.length === limits.maxSkills || others.length === 0) break;
+    options.onDecision?.({ name: best.data.name, decision: 'selected', relevance: best.relevance });
+    if (selected.length === limits.maxSkills) {
+      for (const { data, relevance } of others) {
+        options.onDecision?.({ name: data.name, decision: 'selection-limit', relevance });
+      }
+      break;
+    }
+    if (!others.length) break;
+
+    const referenceName = best.data.name;
+    function retain(name: string, relevance: number, overlap: number) {
+      if (overlap < limits.minRedundancy) return true;
+      options.onDecision?.({ name, decision: 'redundant', relevance, coveredBy: referenceName });
+      return false;
+    }
 
     baselineCalls += Math.ceil(others.length / selectionBatchSize);
     if (prefetched) {
-      remaining = others.filter(({ data }) =>
-        prefetched!.get(JSON.stringify([best.data.name, data.name]))! < limits.minRedundancy);
+      remaining = others.filter(({ data, relevance }) =>
+        retain(data.name, relevance, prefetched!.get(JSON.stringify([best.data.name, data.name]))!));
       continue;
     }
     const redundancy = await judge({
       candidates: others.map(({ data }) => data), against: best.data, criteria: overlapCriteria,
     });
-    remaining = others.filter(({ data }) => redundancy.get(data.name)! < limits.minRedundancy);
+    remaining = others.filter(({ data, relevance }) => retain(data.name, relevance, redundancy.get(data.name)!));
 
     const count = remaining.length;
     if (options.optimizeRedundancy && selected.length === 1 && count >= 3

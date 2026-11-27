@@ -22,6 +22,7 @@ export interface RedundancyPair {
 }
 
 export interface JudgmentProvider {
+  judgeCoverage?(batch: CoverageBatch): Promise<readonly (readonly number[])[]>;
   judge(batch: JudgmentBatch): Promise<ReadonlyMap<string, number>>;
   judgeRedundancyPairs?(batch: Pick<JudgmentBatch, 'task' | 'criteria' | 'technologies'> & {
     pairs: readonly RedundancyPair[];
@@ -37,3 +38,10 @@ export const redundancyCriteria: JudgmentCriteria = {
   true: 'The reference skill already covers the candidate’s useful contribution to this task.',
   false: 'The candidate adds a distinct capability needed for this task.',
 };
+
+export interface CoverageBatch {
+  task: string;
+  needs: readonly string[];
+  technologies?: readonly string[];
+  candidates: readonly Candidate[];
+}

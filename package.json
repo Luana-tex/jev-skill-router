@@ -29,6 +29,7 @@
   },
   "files": [
     "dist",
-    "ROADMAP.md"
+    "ROADMAP.md",
+    "codex"
   ]
 }

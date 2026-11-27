@@ -4,6 +4,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
+import { codexEarlyFallback, codexNetworkAction, nativeFallback, recommendForCodex } from './codex.js';
+import { resolveCodexCredentials } from './codex-config.js';
+import { codexDoctor } from './doctor.js';
 import { createSelectionCache } from './decision/cache.js';
 import { routingMetrics } from './decision/metrics.js';
 import { routeSkills } from './decision/routing.js';
@@ -181,6 +184,113 @@ addDiscoveryOptions(program.command('select'))
     for (const skill of selected) {
       console.log(`${skill.name} [${skill.scope}] ${(skill.relevance * 100).toFixed(1)}% ${JSON.stringify(skill.path)}`);
     }
+  });
+
+async function readCodexInput(): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    bytes += chunk.length;
+    if (bytes > 256 * 1024) throw new Error('Entrada do Codex excede o limite.');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+program.command('codex-recommend')
+  .description('Emite recomendações para a sessão do Codex a partir de JSON em stdin.')
+  .option('--no-cache', 'Desativa a leitura e gravação do cache.')
+  .option('--cache-dir <path>', 'Diretório base do cache.')
+  .option('--cache-ttl-seconds <number>', 'Validade do cache em segundos.')
+  .option('--baseline', 'Executa o motor legado sem cache ou seleção adaptativa.')
+  .option('--max-skills <number>', 'Quantidade máxima de recomendações.')
+  .option('--min-relevance <number>', 'Probabilidade mínima para considerar uma necessidade coberta.')
+  .option('--min-redundancy <number>', 'Probabilidade mínima de redundância no motor legado.')
+  .option('--max-context-tokens <number>', 'Orçamento estimado de contexto para a seleção adaptativa.')
+  .option('--metrics', 'Inclui métricas agregadas no JSON local.')
+  .option('--explain', 'Inclui decisões locais sobre as candidatas.')
+  .option('--input-usd-per-million <number>', 'Tarifa em USD por milhão de tokens de entrada.')
+  .option('--output-usd-per-million <number>', 'Tarifa em USD por milhão de tokens de saída.')
+  .option('--after-network-approval', 'Identifica a única nova tentativa autorizada.')
+  .option('--network-approval-denied', 'Emite fallback sem tentar rede após recusa de autorização.')
+  .action(async (options: {
+    cache?: boolean;
+    cacheDir?: string;
+    cacheTtlSeconds?: string;
+    metrics?: boolean;
+    baseline?: boolean;
+    maxSkills?: string;
+    minRelevance?: string;
+    minRedundancy?: string;
+    maxContextTokens?: string;
+    explain?: boolean;
+    inputUsdPerMillion?: string;
+    outputUsdPerMillion?: string;
+    afterNetworkApproval?: boolean;
+    networkApprovalDenied?: boolean;
+  }) => {
+    let meter: ReturnType<typeof routingMetrics> | undefined;
+    const publish = (report: object) => console.log(JSON.stringify({
+      ...report, usageTracking: 'not-observed',
+      ...(options.metrics ? { metrics: (meter ?? routingMetrics(0, 0)).summary() } : {}),
+    }));
+    const earlyFallback = codexEarlyFallback(process.env.JEV_SKILL_ROUTER_DISABLED === '1', !!options.networkApprovalDenied);
+    if (earlyFallback) {
+      publish(earlyFallback);
+      return;
+    }
+    const config = settings.extend({
+      maxContextTokens: z.number().int().nonnegative().optional(),
+    }).safeParse({
+      maxSkills: optionNumber(options.maxSkills),
+      minRelevance: optionNumber(options.minRelevance),
+      minRedundancy: optionNumber(options.minRedundancy),
+      maxContextTokens: optionNumber(options.maxContextTokens),
+      cacheTtlSeconds: optionNumber(options.cacheTtlSeconds),
+      inputUsdPerMillion: optionNumber(options.inputUsdPerMillion),
+      outputUsdPerMillion: optionNumber(options.outputUsdPerMillion),
+    });
+    if (!config.success) {
+      publish(nativeFallback('invalid-input'));
+      return;
+    }
+    const input = await readCodexInput().catch(() => undefined);
+    const runMeter = meter = routingMetrics(config.data.inputUsdPerMillion, config.data.outputUsdPerMillion);
+    let receivedHttpResponse = false;
+    let credentials: ReturnType<typeof resolveCodexCredentials> | undefined;
+    const provider = createJevProvider({
+      apiKey: async () => (await (credentials ??= resolveCodexCredentials())).key,
+      model: config.data.model,
+      timeoutMs: config.data.timeoutMs,
+      onMetrics: (batch) => {
+        receivedHttpResponse ||= batch.status !== undefined;
+        runMeter.record(batch);
+      },
+    });
+    const result = await recommendForCodex(input, provider, {
+      model: config.data.model,
+      cache: options.cache === false ? undefined : createSelectionCache(
+        options.cacheDir ?? defaultCacheDirectory, config.data.cacheTtlSeconds * 1000,
+      ),
+      explain: options.explain,
+      baseline: options.baseline,
+      maxSkills: config.data.maxSkills,
+      minRelevance: config.data.minRelevance,
+      minRedundancy: config.data.minRedundancy,
+      maxContextTokens: config.data.maxContextTokens,
+    });
+    const code = 'diagnostic' in result ? result.diagnostic?.code : undefined;
+    const nextAction = codexNetworkAction(code, !!options.afterNetworkApproval, receivedHttpResponse);
+    publish({
+      ...result,
+      ...(nextAction ? { nextAction } : {}),
+    });
+  });
+
+program.command('doctor')
+  .description('Verifica a instalação e as credenciais locais, sem consultar a API.')
+  .action(async () => {
+    console.log(JSON.stringify(await codexDoctor(), null, 2));
   });
 
 program.command('cache-clear')

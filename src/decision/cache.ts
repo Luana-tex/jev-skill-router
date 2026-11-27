@@ -6,6 +6,11 @@ import { z } from 'zod';
 const entrySchema = z.object({
   createdAt: z.number().int().nonnegative(),
   baselineCalls: z.number().int().nonnegative(),
+  coverage: z.object({
+    covered: z.array(z.number().int().nonnegative()),
+    uncovered: z.array(z.number().int().nonnegative()),
+    estimatedContextTokens: z.number().int().nonnegative(),
+  }).optional(),
   selected: z.array(z.object({ index: z.number().int().nonnegative(), relevance: z.number().min(0).max(1) })),
 });
 
