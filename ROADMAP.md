@@ -11,3 +11,4 @@
 9. **Seleção adaptativa** — Identificadores qualificados do Codex, erros de inventário por entrada e seleção por cobertura com orçamento configurável. Comparação simulada e medições reais anteriores registradas no README.
 10. **Analytics e persistência** — SQLite nativo opt-in, migrations, correlação de tentativas, exportação e CLI de consultas locais. O serviço de leitura fica disponível para a futura interface.
 11. **Robustez do analytics** — Métricas preservadas com tentativas ausentes, consultas somente leitura, diagnósticos de persistência e recuperação idempotente sem novo julgamento.
+12. **Fundação do dashboard** — Next.js local, design system responsivo, Overview e navegação de leitura sobre o SQLite existente, com estados de carregamento, vazio, falha e dados parciais.

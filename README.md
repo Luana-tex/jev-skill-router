@@ -259,3 +259,25 @@ node "$HOME/.agents/skills/jev-skill-router/scripts/recommend.mjs" analytics his
 A execução com cache miss fez quatro chamadas, consumiu 9.106 tokens de entrada e 2.064 de saída, levou 798 ms e teve custo estimado de US$ 0,000382452. A execução com cache hit levou 6 ms, evitou quatro chamadas, consumiu zero tokens e falhou ao gravar no sandbox. A inspeção em modo somente leitura encontrou as métricas da execução bem-sucedida na tentativa 2. O agregador anterior ocultava todos esses valores quando a tentativa 1 não havia sido registrada. O resumo atualizado exibe os valores observados e marca a operação como incompleta.
 
 Para reproduzir sem custos, execute `npm test -- test/analytics-launcher.test.ts`. O teste usa um banco temporário e verifica cache miss com transporte simulado, bloqueio de escrita no hit, recuperação repetida, rota local e fallback.
+
+## Dashboard local
+
+O dashboard em `dashboard/` usa Next.js App Router e lê o serviço SQLite existente em componentes de servidor. Use Node.js 22.13 ou superior.
+
+```sh
+npm ci
+npm ci --prefix dashboard
+npm --prefix dashboard run dev
+```
+
+Abra `http://127.0.0.1:3000`. Os comandos `dev` e `start` escutam apenas na interface de loopback, e o dashboard rejeita nomes de host externos. O dashboard usa a mesma configuração de diretório do Analytics e abre o banco no modo somente leitura. Para gerar e iniciar o build de produção local:
+
+```sh
+npm --prefix dashboard run typecheck
+npm --prefix dashboard run build
+npm --prefix dashboard run start
+```
+
+O Overview mostra os dados observados e oferece filtros de período, tema claro e escuro, e estados para histórico vazio, medições incompletas e falhas de leitura. O status no cabeçalho informa se o registro está ativo. Dados de recomendações permanecem separados de qualquer evidência de uso. O cache hit rate usa apenas contagens disponíveis de hits e misses.
+
+As demais seções oferecem visualizações iniciais de leitura. Preferências de Analytics continuam sob controle da CLI. O dashboard não inicia sessões de roteamento nem envia dados ao Jev.
