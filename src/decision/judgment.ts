@@ -13,10 +13,19 @@ export interface JudgmentBatch {
   candidates: readonly Candidate[];
   against?: Candidate;
   criteria: JudgmentCriteria;
+  technologies?: readonly string[];
+}
+
+export interface RedundancyPair {
+  reference: Candidate;
+  candidate: Candidate;
 }
 
 export interface JudgmentProvider {
   judge(batch: JudgmentBatch): Promise<ReadonlyMap<string, number>>;
+  judgeRedundancyPairs?(batch: Pick<JudgmentBatch, 'task' | 'criteria' | 'technologies'> & {
+    pairs: readonly RedundancyPair[];
+  }): Promise<readonly number[]>;
 }
 
 export const relevanceCriteria: JudgmentCriteria = {

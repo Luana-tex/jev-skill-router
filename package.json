@@ -6,7 +6,8 @@
     "test": "vitest run",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "benchmark": "vitest run test/benchmark.test.ts --silent=false --reporter=verbose"
   },
   "license": "MIT",
   "type": "module",
